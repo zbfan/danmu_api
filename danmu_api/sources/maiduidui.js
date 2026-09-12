@@ -63,9 +63,18 @@ class MaiduiduiSource extends BaseSource {
     };
   }
 
+  // vodType 数字到类型名的映射（埋堆堆搜索接口已不返回 typeName 字符串，改用 vodType 数字）。
+  // 按埋堆堆旧接口的 typeName 分类约定解释：0=剧集(正剧，多集), 1=电影, 2=综艺，3=短视频/花絮。
+  // materialName 是题材标签（如“奇幻”“警匪”），不作为剧集/电影/综艺类型使用。
+  static get VOD_TYPE_MAP() {
+    return { 0: "剧集", 1: "电影", 2: "综艺" };
+  }
+
+  // 旧接口 getAllSearchResult4820.action 已失效(返回空数组)，新接口去掉版本号后缀
+  // 新接口数据结构变化：typeItem.typeName 不再存在，改用 vodItem.vodType + vodItem.materialName
   async search(keyword) {
     try {
-      const urlSuffix = "/searchApi/search/getAllSearchResult4820.action";
+      const urlSuffix = "/searchApi/search/getAllSearchResult.action";
       const searchUrl = `${this.domain}${urlSuffix}`;
       const dataBody = {
         "keyWord": keyword
@@ -76,34 +85,43 @@ class MaiduiduiSource extends BaseSource {
       });
 
       if (!response || !response.data) {
-        log("info", "[Maiduidui] 搜索响应为空");
+        log("info", "[maiduidui] 搜索响应为空");
         return [];
       }
 
       const data = typeof response.data === "string" ? JSON.parse(response.data) : response.data;
 
       const animes = [];
-      const typeList = data?.data;
+      const typeList = Array.isArray(data?.data) ? data.data : [];
       for (const typeItem of typeList) {
-        if (typeItem?.typeName === "剧集" || typeItem?.typeName === "电影" || typeItem?.typeName === "综艺") {
-          for (const vodItem of typeItem?.vodList) {
-            animes.push({
-              name: vodItem.name,
-              type: typeItem.typeName,
-              year: vodItem.yearName,
-              img: vodItem.downImage,
-              url: vodItem.uuid
-            });
-          }
+        // 新接口不再有 typeName 字段，改为遍历 vodList，根据 vodType 判断类型
+        const vodList = Array.isArray(typeItem?.vodList) ? typeItem.vodList : [];
+        for (const vodItem of vodList) {
+          if (!vodItem?.name || !vodItem?.uuid) continue;
+
+          const vodType = Number(vodItem.vodType);
+          // 仅保留映射表中的正剧、电影和综艺；未收录的类型（如短视频/花絮 3）直接过滤。
+          if (!Number.isInteger(vodType) || !Object.prototype.hasOwnProperty.call(MaiduiduiSource.VOD_TYPE_MAP, vodType)) continue;
+
+          // materialName 是题材标签（如“警匪”“奇幻”），资源类型统一由 vodType 映射。
+          const typeName = MaiduiduiSource.VOD_TYPE_MAP[vodType];
+
+          animes.push({
+            name: vodItem.name,
+            type: typeName,
+            year: vodItem.yearName || null,
+            img: vodItem.downImage,
+            url: vodItem.uuid
+          });
         }
       }
 
       // 正常情况下输出 JSON 字符串
-      log("info", `[Maiduidui] 搜索找到 ${animes.length} 个有效结果`);
+      log("info", `[maiduidui] 搜索找到 ${animes.length} 个有效结果`);
       return animes;
     } catch (error) {
       // 捕获请求中的错误
-      log("error", "[Maiduidui] getMaiduiduiAnimes error:", {
+      log("error", "[maiduidui] getMaiduiduiAnimes error:", {
         message: error.message,
         name: error.name,
         stack: error.stack,
@@ -130,7 +148,7 @@ class MaiduiduiSource extends BaseSource {
       });
 
       if (!response || !response.data) {
-        log("info", "[Maiduidui] 获取详情信息响应为空");
+        log("info", "[maiduidui] 获取详情信息响应为空");
         return [];
       }
 
@@ -144,7 +162,7 @@ class MaiduiduiSource extends BaseSource {
       return 0;
     } catch (error) {
       // 捕获请求中的错误
-      log("error", "[Maiduidui] getMaiduiduiDetail error:", {
+      log("error", "[maiduidui] getMaiduiduiDetail error:", {
         message: error.message,
         name: error.name,
         stack: error.stack,
@@ -167,7 +185,7 @@ class MaiduiduiSource extends BaseSource {
       });
 
       if (!response || !response.data) {
-        log("info", "[Maiduidui] 获取集信息响应为空");
+        log("info", "[maiduidui] 获取集信息响应为空");
         return [];
       }
 
@@ -185,7 +203,7 @@ class MaiduiduiSource extends BaseSource {
       return eps;
     } catch (error) {
       // 捕获请求中的错误
-      log("error", "[Maiduidui] getMaiduiduiEposides error:", {
+      log("error", "[maiduidui] getMaiduiduiEposides error:", {
         message: error.message,
         name: error.name,
         stack: error.stack,
@@ -207,7 +225,7 @@ class MaiduiduiSource extends BaseSource {
 
     // 添加错误处理，确保sourceAnimes是数组
     if (!sourceAnimes || !Array.isArray(sourceAnimes)) {
-      log("error", "[Maiduidui] sourceAnimes is not a valid array");
+      log("error", "[maiduidui] sourceAnimes is not a valid array");
       return [];
     }
 
@@ -227,7 +245,7 @@ class MaiduiduiSource extends BaseSource {
       // 如果已命中目标，减少详情请求量
       if (seasonFiltered.length > 0) {
         filteredAnimes = seasonFiltered;
-        log("info", `[Maiduidui] 结果已命中目标季(第${resolvedQuerySeason}季)，跳过非目标季相关请求`);
+        log("info", `[maiduidui] 结果已命中目标季(第${resolvedQuerySeason}季)，跳过非目标季相关请求`);
       }
     }
 
@@ -246,10 +264,12 @@ class MaiduiduiSource extends BaseSource {
           }
 
           if (links.length > 0) {
+            // 新搜索接口不再返回 yearName，year 可能为 null；为 null 时标题不显示年份括号
+            const yearPart = anime.year ? `(${anime.year})` : '';
             let transformedAnime = {
               animeId: convertToAsciiSum(anime.url),
               bangumiId: anime.url,
-              animeTitle: `${anime.name}(${anime.year})【${anime.type}】from maiduidui`,
+              animeTitle: `${anime.name}${yearPart}【${anime.type}】from maiduidui`,
               type: anime.type,
               typeDescription: anime.type,
               imageUrl: anime.img,
@@ -267,7 +287,7 @@ class MaiduiduiSource extends BaseSource {
             if (globals.animes.length > globals.MAX_ANIMES) removeEarliestAnime();
           }
         } catch (error) {
-          log("error", `[Maiduidui] Error processing anime: ${error.message}`);
+          log("error", `[maiduidui] Error processing anime: ${error.message}`);
         }
       })
     );
@@ -278,7 +298,7 @@ class MaiduiduiSource extends BaseSource {
   }
 
   async getEpisodeDanmu(id) {
-    log("info", "[Maiduidui] 开始从本地请求埋堆堆弹幕...", id);
+    log("info", "[maiduidui] 开始从本地请求埋堆堆弹幕...", id);
     
     // 获取弹幕分段数据
     const segmentResult = await this.getEpisodeDanmuSegments(id);
@@ -287,7 +307,7 @@ class MaiduiduiSource extends BaseSource {
     }
 
     const segmentList = segmentResult.segmentList;
-    log("info", `[Maiduidui] 弹幕分段数量: ${segmentList.length}`);
+    log("info", `[maiduidui] 弹幕分段数量: ${segmentList.length}`);
 
     // 并发请求所有弹幕段，限制并发数量为20
     const MAX_CONCURRENT = 20;
@@ -315,7 +335,7 @@ class MaiduiduiSource extends BaseSource {
             allComments.push(...comments);
           }
         } else {
-          log("error", `[Maiduidui] 获取弹幕段失败 (${start}-${end}s):`, result.reason.message);
+          log("error", `[maiduidui] 获取弹幕段失败 (${start}-${end}s):`, result.reason.message);
         }
       }
       
@@ -326,7 +346,7 @@ class MaiduiduiSource extends BaseSource {
     }
 
     if (allComments.length === 0) {
-      log("info", `[Maiduidui] 埋堆堆: 该视频暂无弹幕数据 (vid=${id})`);
+      log("info", `[maiduidui] 埋堆堆: 该视频暂无弹幕数据 (vid=${id})`);
       return [];
     }
 
@@ -336,13 +356,13 @@ class MaiduiduiSource extends BaseSource {
   }
 
   async getEpisodeDanmuSegments(id) {
-    log("info", "[Maiduidui] 获取埋堆堆弹幕分段列表...", id);
+    log("info", "[maiduidui] 获取埋堆堆弹幕分段列表...", id);
 
     const idInfo = this.extractByRegex(id);
     const uuid = idInfo.uuid;
     const duration = await this.getDetail(id);
-    log("info", "[Maiduidui] uuid:", uuid);
-    log("info", "[Maiduidui] duration:", duration);
+    log("info", "[maiduidui] uuid:", uuid);
+    log("info", "[maiduidui] duration:", duration);
 
     const segmentDuration = 60; // 每个分片1分钟
     const segmentList = [];
@@ -396,7 +416,7 @@ class MaiduiduiSource extends BaseSource {
 
       return contents;
     } catch (error) {
-      log("error", "[Maiduidui] 请求分片弹幕失败:", error);
+      log("error", "[maiduidui] 请求分片弹幕失败:", error);
       return []; // 返回空数组而不是抛出错误，保持与getEpisodeDanmu一致的行为
     }
   }
